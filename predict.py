@@ -21,6 +21,7 @@ Usage:
 """
 
 import re
+import json
 import pandas as pd
 import numpy as np
 from catboost import CatBoostRegressor
@@ -33,6 +34,9 @@ _DIR = Path(__file__).parent
 _model_q25 = CatBoostRegressor().load_model(str(_DIR / "model_q25.cbm"))
 _model_q50 = CatBoostRegressor().load_model(str(_DIR / "model_q50.cbm"))
 _model_q75 = CatBoostRegressor().load_model(str(_DIR / "model_q75.cbm"))
+
+with open(_DIR / "feature_medians.json") as f:
+    _medians = json.load(f)
 
 # ── Brand helpers (same as training) ──────────────────────────────────────
 
@@ -95,12 +99,8 @@ def _brand_tier(clean_brand):
 
 # ── Public API ────────────────────────────────────────────────────────────
 
-# Training data was sold in 2018–2020 (median yearsold ≈ 2019).
-# Pin to training era so Car_Age matches what the model learned.
-TRAINING_ERA_YEAR = 2019
-
-# BLS CPI Used Cars & Trucks: ~143.7 (Dec 2019) → ~187 (early 2026) ≈ 1.30x
-CPI_ADJUSTMENT = 1.30
+from datetime import datetime
+CURRENT_YEAR = datetime.now().year
 
 def get_price_range(
     make: str,
@@ -127,7 +127,7 @@ def get_price_range(
     brand_clean = _normalize_brand(make)
     brand_tier = _brand_tier(brand_clean)
     zip3 = str(zipcode)[:3] if zipcode else "Missing"
-    car_age = max(TRAINING_ERA_YEAR - int(year), 0)
+    car_age = max(CURRENT_YEAR - int(year), 0)
     miles_per_year = mileage / (car_age + 1)
 
     row = pd.DataFrame([{
@@ -150,11 +150,6 @@ def get_price_range(
 
     # Ensure ordering (safety check)
     low, mid, high = sorted([low, mid, high])
-
-    # Inflate from 2019 training-era dollars to current dollars
-    low *= CPI_ADJUSTMENT
-    mid *= CPI_ADJUSTMENT
-    high *= CPI_ADJUSTMENT
 
     return round(low, 2), round(mid, 2), round(high, 2)
 
