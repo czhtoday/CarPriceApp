@@ -133,6 +133,11 @@ def compute_region_analysis(df, predict_func):
     # remove small groups for stability
     region_analysis = region_analysis[region_analysis["sample_size"] >= 20].copy()
 
+    # drop non-US / unknown regions (Canadian postal codes, redacted zips, etc.)
+    region_analysis = region_analysis[
+        ~region_analysis["region"].isin(["Other / Non-US", "Unknown", "Other"])
+    ].copy()
+
     # turn residual into user-facing metric
     # negative residual means cheaper than expected
     region_analysis["price_advantage"] = -region_analysis["avg_residual"]

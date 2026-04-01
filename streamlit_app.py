@@ -145,14 +145,12 @@ def page_role():
         with st.container(border=True):
             st.markdown("### 💰 I'm a Seller")
             st.write(
-                "Get a data-driven price estimate for your vehicle, "
-                "see where it sits on the depreciation curve, "
-                "and compare regional pricing."
+                "Get a data-driven price estimate for your vehicle "
+                "and see where it sits on the depreciation curve."
             )
             st.markdown(
                 "- Price range estimate\n"
                 "- Depreciation stage analysis\n"
-                "- Regional price comparison\n"
                 "- What-if mileage / year simulator"
             )
             if st.button("Get Started as Seller", use_container_width=True, type="primary"):
@@ -196,7 +194,7 @@ def page_profile():
 
     st.title("💰 Tell us about your car" if is_seller else "🔍 Set your preferences")
     st.caption(
-        "Enter your vehicle details for pricing, depreciation analysis, and regional comparison."
+        "Enter your vehicle details for pricing and depreciation analysis."
         if is_seller
         else "Set your budget and preferences to get personalized value-ranked recommendations."
     )
@@ -373,55 +371,6 @@ def page_seller_dash():
             st.warning("Not enough data to compute depreciation curve.")
     except Exception as e:
         st.warning(f"Depreciation analysis unavailable: {e}")
-
-    st.divider()
-
-    st.subheader("🗺️ Regional Price Comparison")
-    st.caption("Where are similar cars cheaper or more expensive? Based on model residuals across regions.")
-
-    try:
-        region_deals = get_cached_region_deals(top_n=8)
-
-        if not region_deals.empty:
-            fig_reg = go.Figure(go.Bar(
-                x=region_deals["region"],
-                y=region_deals["price_advantage"],
-                marker_color=[
-                    "#2fc872" if pa > 0 else "#e85050"
-                    for pa in region_deals["price_advantage"]
-                ],
-                text=[
-                    f"{fmt(pa)} savings" if pa > 0 else f"{fmt(abs(pa))} more"
-                    for pa in region_deals["price_advantage"]
-                ],
-                textposition="outside",
-            ))
-            fig_reg.update_layout(
-                height=320, margin=dict(t=30, b=40),
-                yaxis=dict(title="Price Advantage ($)", tickprefix="$"),
-                xaxis=dict(title="Region"),
-            )
-            st.plotly_chart(fig_reg, use_container_width=True)
-
-            st.dataframe(
-                region_deals[["region", "price_advantage", "deal_label", "sample_size"]]
-                .rename(columns={
-                    "region": "Region",
-                    "price_advantage": "Avg Savings ($)",
-                    "deal_label": "Deal Rating",
-                    "sample_size": "Samples",
-                }),
-                use_container_width=True, hide_index=True,
-            )
-
-            best = region_deals.iloc[0]
-            st.info(f"💡 **{best['region']}** tends to have the best deals — "
-                    f"cars sell about **{fmt(best['price_advantage'])}** below fair value on average "
-                    f"({best['deal_label']}).")
-        else:
-            st.info("Not enough regional data for comparison.")
-    except Exception as e:
-        st.warning(f"Regional analysis unavailable: {e}")
 
     st.divider()
 
