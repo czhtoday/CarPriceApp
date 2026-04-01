@@ -5,6 +5,7 @@ from typing import Optional
 
 from predict import get_price_range
 from buyer_recommend import recommend
+from car_image import get_vehicle_image
 
 app = FastAPI()
 
@@ -78,7 +79,12 @@ def buyer_recommend_api(req: BuyerRequest):
         top_n=req.top_n,
     )
 
-    print(type(results))
+    # Fetch image URLs for each recommendation
+    for rec in results:
+        title = rec.get("title", "")
+        typical_year = rec.get("typical_year")
+        image_url = get_vehicle_image(title, typical_year)
+        rec["image_url"] = image_url
 
     if hasattr(results, "to_dict"):
         return {"results": results.to_dict(orient="records")}

@@ -624,6 +624,21 @@ function BuyerDash({profile,onBack}){
             <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:14,marginBottom:24}}>
               {results.map((rec,i)=>{const ic=cmpSet.has(rec.title);return(
                 <div key={`${rec.title}-${i}`}style={{padding:20,borderRadius:14,background:"var(--bg2)",border:`1px solid ${ic?"var(--amber)":"var(--bd1)"}`,animation:`slideUp 0.4s ease ${0.04*i}s both`,transition:"border-color 0.2s"}}>
+                  {/* Car Image */}
+                  {rec.image_url ? (
+                    <div style={{marginBottom:12,borderRadius:10,overflow:"hidden",height:140,background:"var(--bg3)"}}>
+                      <img 
+                        src={rec.image_url} 
+                        alt={rec.title}
+                        style={{width:"100%",height:"100%",objectFit:"cover"}}
+                        onError={(e)=>{e.target.style.display='none';e.target.parentElement.style.display='none';}}
+                      />
+                    </div>
+                  ) : (
+                    <div style={{marginBottom:12,borderRadius:10,height:140,background:"var(--bg3)",display:"flex",alignItems:"center",justifyContent:"center",border:"1px dashed var(--bd1)"}}>
+                      <span style={{fontSize:40}}>🚗</span>
+                    </div>
+                  )}
                   <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",marginBottom:12}}>
                     <div><div style={{fontSize:9,fontWeight:700,color:"var(--amber)",letterSpacing:1.5,textTransform:"uppercase",marginBottom:3,fontFamily:"'JetBrains Mono',monospace"}}>#{i+1}</div><h4 style={{fontSize:16,fontWeight:800,color:"var(--t0)",margin:0}}>{rec.title}</h4></div>
                     <Badge t={rec.confidence}c={rec.confidence==="High"?"var(--green)":rec.confidence==="Medium"?"var(--amber)":"var(--t3)"}/>
