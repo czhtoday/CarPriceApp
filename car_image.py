@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import html
 import json
+import re
 from urllib.parse import urlencode
 from urllib.request import Request, urlopen
 
@@ -32,22 +33,25 @@ def _thumbnail_from_page(page: dict) -> str | None:
         return None
     if url.startswith("//"):
         url = "https:" + url
+    url = re.sub(r"/\d+px-", "/400px-", url)
     return url
 
 
-def fetch_image_bytes(url: str) -> bytes | None:
-    request = Request(
-        url,
-        headers={
-            "User-Agent": USER_AGENT,
-            "Accept": "image/*",
-        },
-    )
-    try:
-        with urlopen(request, timeout=5) as response:
-            return response.read()
-    except Exception:
-        return None
+def fetch_image_bytes(url: str, retries: int = 2) -> bytes | None:
+    for _ in range(retries):
+        request = Request(
+            url,
+            headers={
+                "User-Agent": USER_AGENT,
+                "Accept": "image/*",
+            },
+        )
+        try:
+            with urlopen(request, timeout=10) as response:
+                return response.read()
+        except Exception:
+            continue
+    return None
 
 
 def get_vehicle_image(title: str, typical_year: int | None = None) -> str | None:

@@ -37,10 +37,19 @@ def load_car_image_module():
     return car_image
 
 
-@st.cache_data(show_spinner=False)
-def get_cached_image(title: str, typical_year: int | None) -> str | None:
+def get_cached_image(title: str, typical_year: int | None) -> bytes | None:
+    cache = st.session_state.setdefault("_img_cache", {})
+    key = (title, typical_year)
+    if key in cache:
+        return cache[key]
     car_image = load_car_image_module()
-    return car_image.get_vehicle_image(title, typical_year)
+    url = car_image.get_vehicle_image(title, typical_year)
+    if url:
+        data = car_image.fetch_image_bytes(url)
+        if data:
+            cache[key] = data
+            return data
+    return None
 
 
 @st.cache_data(show_spinner="Analyzing regions…")
@@ -84,9 +93,15 @@ def fmt(value):
     return "${:,.0f}".format(value)
 
 
-def option_list(df, column):
+def option_list(df, column, normalizer=None, min_count=0):
     values = df[column].dropna().astype(str).str.strip()
     values = values[values.ne("") & values.ne("nan")]
+    if normalizer is not None:
+        values = values.map(normalizer)
+        values = values[~values.isin(("Other", "Missing"))]
+    if min_count > 1:
+        counts = values.value_counts()
+        values = values[values.isin(counts[counts >= min_count].index)]
     return sorted(values.unique().tolist())
 
 
@@ -127,39 +142,41 @@ def page_role():
     col1, col2 = st.columns(2)
 
     with col1:
-        st.markdown("### 💰 I'm a Seller")
-        st.write(
-            "Get a data-driven price estimate for your vehicle, "
-            "see where it sits on the depreciation curve, "
-            "and compare regional pricing."
-        )
-        st.markdown(
-            "- Price range estimate *(Direction 1)*\n"
-            "- Depreciation stage analysis *(Direction 3)*\n"
-            "- Regional price comparison *(Direction 3)*\n"
-            "- What-if mileage / year simulator"
-        )
-        if st.button("Get Started as Seller", use_container_width=True, type="primary"):
-            st.session_state["role"] = "seller"
-            nav_to("profile")
-            st.rerun()
+        with st.container(border=True):
+            st.markdown("### 💰 I'm a Seller")
+            st.write(
+                "Get a data-driven price estimate for your vehicle, "
+                "see where it sits on the depreciation curve, "
+                "and compare regional pricing."
+            )
+            st.markdown(
+                "- Price range estimate\n"
+                "- Depreciation stage analysis\n"
+                "- Regional price comparison\n"
+                "- What-if mileage / year simulator"
+            )
+            if st.button("Get Started as Seller", use_container_width=True, type="primary"):
+                st.session_state["role"] = "seller"
+                nav_to("profile")
+                st.rerun()
 
     with col2:
-        st.markdown("### 🔍 I'm a Buyer")
-        st.write(
-            "Find the best value used cars within your budget, "
-            "ranked by value score with depreciation and regional insights."
-        )
-        st.markdown(
-            "- Top 10 value-ranked recommendations *(Direction 2)*\n"
-            "- Deal quality scoring *(Direction 2)*\n"
-            "- Depreciation & resale labels *(Direction 3)*\n"
-            "- Regional best-deal insights *(Direction 3)*"
-        )
-        if st.button("Get Started as Buyer", use_container_width=True, type="primary"):
-            st.session_state["role"] = "buyer"
-            nav_to("profile")
-            st.rerun()
+        with st.container(border=True):
+            st.markdown("### 🔍 I'm a Buyer")
+            st.write(
+                "Find the best value used cars within your budget, "
+                "ranked by value score with depreciation and regional insights."
+            )
+            st.markdown(
+                "- Top 10 value-ranked recommendations\n"
+                "- Deal quality scoring\n"
+                "- Depreciation & resale labels\n"
+                "- Regional best-deal insights"
+            )
+            if st.button("Get Started as Buyer", use_container_width=True, type="primary"):
+                st.session_state["role"] = "buyer"
+                nav_to("profile")
+                st.rerun()
 
 
 def page_profile():
@@ -171,9 +188,11 @@ def page_profile():
         st.rerun()
 
     df = load_reference_data()
-    makes = option_list(df, "Make")
-    body_types = option_list(df, "BodyType")
-    drive_types = option_list(df, "DriveType")
+    predict = load_predict_module()
+    recommend = load_recommend_module()
+    makes = option_list(df, "Make", normalizer=predict._normalize_brand, min_count=10)
+    body_types = option_list(df, "BodyType", normalizer=recommend._normalize_body_type)
+    drive_types = option_list(df, "DriveType", normalizer=recommend._normalize_drive_type)
 
     st.title("💰 Tell us about your car" if is_seller else "🔍 Set your preferences")
     st.caption(
@@ -266,7 +285,7 @@ def page_seller_dash():
 
     st.divider()
 
-    st.subheader("📊 Direction 1 · Price Estimate")
+    st.subheader("📊 Price Estimate")
     st.write("Three-tier pricing from quantile regression models (CatBoost Q25 / Q50 / Q75).")
 
     m1, m2, m3 = st.columns(3)
@@ -293,7 +312,7 @@ def page_seller_dash():
 
     st.divider()
 
-    st.subheader("📉 Direction 3 · Depreciation Analysis")
+    st.subheader("📉 Depreciation Analysis")
 
     try:
         dep_df = depreciation.load_data()
@@ -357,7 +376,7 @@ def page_seller_dash():
 
     st.divider()
 
-    st.subheader("🗺️ Direction 3 · Regional Price Comparison")
+    st.subheader("🗺️ Regional Price Comparison")
     st.caption("Where are similar cars cheaper or more expensive? Based on model residuals across regions.")
 
     try:
@@ -406,7 +425,7 @@ def page_seller_dash():
 
     st.divider()
 
-    st.subheader("🔮 Direction 1 · What-If Simulator")
+    st.subheader("🔮 What-If Simulator")
     st.caption("Adjust mileage or year to see how the price estimate changes.")
 
     with st.form("whatif"):
@@ -485,9 +504,11 @@ def page_buyer_dash():
 
     st.subheader("🔧 Refine Your Search")
     df = load_reference_data()
-    body_types = option_list(df, "BodyType")
-    drive_types = option_list(df, "DriveType")
-    makes = option_list(df, "Make")
+    predict = load_predict_module()
+    recommend = load_recommend_module()
+    body_types = option_list(df, "BodyType", normalizer=recommend._normalize_body_type)
+    drive_types = option_list(df, "DriveType", normalizer=recommend._normalize_drive_type)
+    makes = option_list(df, "Make", normalizer=predict._normalize_brand, min_count=10)
 
     with st.form("buyer_filter"):
         fc1, fc2, fc3 = st.columns(3)
@@ -549,7 +570,7 @@ def page_buyer_dash():
 
     st.divider()
 
-    st.subheader("📋 Direction 2 · Top 10 Recommendations")
+    st.subheader("📋 Top 10 Recommendations")
 
     for i in range(0, len(results), 2):
         cols = st.columns(2)
@@ -596,7 +617,7 @@ def page_buyer_dash():
 
     st.divider()
 
-    st.subheader("🗺️ Direction 3 · Regional Best Deals")
+    st.subheader("🗺️ Regional Best Deals")
     st.caption("Which regions tend to have the best deals across all vehicles?")
 
     try:
@@ -628,7 +649,7 @@ def page_buyer_dash():
 
     st.divider()
 
-    st.subheader("⚖️ Direction 2 · Side-by-Side Comparison")
+    st.subheader("⚖️ Side-by-Side Comparison")
     st.caption("Select 2–3 cars to compare.")
 
     titles = [r["title"] for r in results]
@@ -656,6 +677,19 @@ def page_buyer_dash():
 
 def main():
     st.set_page_config(page_title="CarPrice", page_icon="🚗", layout="wide")
+
+    st.markdown(
+        "<style>"
+        "div[data-testid='stHorizontalBlock']"
+        "{ align-items: stretch; }"
+        "div[data-testid='stHorizontalBlock'] > div[data-testid='stColumn']"
+        "{ display: flex; flex-direction: column; }"
+        "div[data-testid='stHorizontalBlock'] > div[data-testid='stColumn']"
+        " > div[data-testid='stVerticalBlockBorderWrapper']"
+        "{ flex: 1; }"
+        "</style>",
+        unsafe_allow_html=True,
+    )
 
     if "page" not in st.session_state:
         st.session_state["page"] = "role"
