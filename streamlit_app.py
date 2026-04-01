@@ -157,14 +157,15 @@ def render_seller_tab(df: pd.DataFrame) -> None:
         dep_df = depreciation.load_data()
         avg_price = depreciation.compute_depreciation(dep_df)
 
-        # Keep logic aligned with depreciation.py / predict.py training era
         car_age = max(2019 - int(year), 0)
         future_drop = depreciation.estimate_future_drop(avg_price, car_age, years=2)
 
         st.markdown("### Depreciation Insight")
         insight_col1, insight_col2 = st.columns(2)
+
         with insight_col1:
             st.metric("Estimated value drop in next 2 years", format_currency(future_drop))
+
         with insight_col2:
             if car_age <= 8:
                 stage = "High depreciation stage"
@@ -285,16 +286,36 @@ def render_buyer_tab(df: pd.DataFrame) -> None:
         depreciation = load_depreciation_module()
         top_regions = depreciation.get_region_deals(predict_mid_from_row)
 
-        st.markdown("### Top Undervalued Regions")
-        st.caption("Regions with the most negative residuals tend to offer prices below model expectations.")
+        st.markdown("### Best Regions to Find Better Deals")
+        st.caption(
+            "Price advantage shows how much cheaper cars are in a region compared with model expectations."
+        )
 
-        show_regions = top_regions.copy()
-        show_regions.columns = ["Region (zip3)", "Average Residual"]
-        show_regions["Average Residual"] = show_regions["Average Residual"].apply(format_currency)
+        best_region = top_regions.iloc[0]
+        st.success(
+            "Best current region: {region} — buyers save about {save} on average ({label}).".format(
+                region=best_region["region"],
+                save=format_currency(best_region["price_advantage"]),
+                label=best_region["deal_label"],
+            )
+        )
 
-        st.dataframe(show_regions, use_container_width=True)
+        display_regions = top_regions[["region", "price_advantage", "deal_label", "sample_size"]].copy()
+        display_regions.columns = ["Region", "You Save", "Deal Level", "Sample Size"]
+        display_regions["You Save"] = display_regions["You Save"].apply(format_currency)
+
+        st.dataframe(display_regions, use_container_width=True)
+
+        chart_df = top_regions.copy()
+        chart_df = chart_df.sort_values("price_advantage", ascending=True)
+
+        st.bar_chart(
+            data=chart_df.set_index("region")["price_advantage"],
+            use_container_width=True,
+        )
+
     except Exception as exc:
-        st.warning("Regional insight unavailable right now: {}".format(exc))
+        st.error("Regional insight error: {}".format(exc))
 
 
 def main() -> None:
