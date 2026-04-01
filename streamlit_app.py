@@ -1,44 +1,28 @@
 from __future__ import annotations
-
 from pathlib import Path
 import sys
 
 import pandas as pd
+import numpy as np
 import streamlit as st
+import plotly.graph_objects as go
+
 
 APP_DIR = Path(__file__).resolve().parent
-
 if str(APP_DIR) not in sys.path:
     sys.path.insert(0, str(APP_DIR))
 
 
-@st.cache_data
-def load_reference_data() -> pd.DataFrame:
-    data_path = APP_DIR / "used_car_sales.csv"
-    df = pd.read_csv(data_path)
-
-    for col in ["pricesold", "Mileage", "Year"]:
-        df[col] = pd.to_numeric(df[col], errors="coerce")
-
-    return df
-
-
 @st.cache_resource
-def load_prediction_module():
+def load_predict_module():
     import predict
     return predict
 
 
 @st.cache_resource
-def load_recommendation_module():
+def load_recommend_module():
     import buyer_recommend
     return buyer_recommend
-
-
-@st.cache_resource
-def load_image_module():
-    import car_image
-    return car_image
 
 
 @st.cache_resource
@@ -47,298 +31,647 @@ def load_depreciation_module():
     return depreciation
 
 
-def option_list(df: pd.DataFrame, column: str) -> list[str]:
-    values = (
-        df[column]
-        .dropna()
-        .astype(str)
-        .str.strip()
+@st.cache_resource
+def load_car_image_module():
+    import car_image
+    return car_image
+
+
+@st.cache_data(show_spinner=False)
+def get_cached_image(title: str, typical_year: int | None) -> str | None:
+    car_image = load_car_image_module()
+    return car_image.get_vehicle_image(title, typical_year)
+
+
+@st.cache_data(show_spinner="Analyzing regions…")
+def get_cached_region_deals(top_n: int) -> pd.DataFrame:
+    depreciation_mod = load_depreciation_module()
+    df = load_reference_data().sample(n=3000, random_state=42).copy()
+    df["zip3"] = df["zipcode"].fillna("Missing").astype(str).str[:3]
+    region_analysis = depreciation_mod.compute_region_analysis(df, row_predict_func)
+    return region_analysis.head(top_n)
+
+
+@st.cache_data(show_spinner="Finding best matches…")
+def get_cached_recommend(
+    budget: float,
+    body_type: str | None,
+    drive_type: str | None,
+    make: str | None,
+    max_mileage: int | None,
+    min_year: int | None,
+    zipcode: str | None,
+    top_n: int,
+) -> list:
+    recommend_mod = load_recommend_module()
+    return recommend_mod.recommend(
+        budget=budget, body_type=body_type, drive_type=drive_type,
+        make=make, max_mileage=max_mileage, min_year=min_year,
+        zipcode=zipcode, top_n=top_n,
     )
+
+
+@st.cache_data
+def load_reference_data() -> pd.DataFrame:
+    data_path = APP_DIR / "used_car_sales.csv"
+    df = pd.read_csv(data_path)
+    for col in ["pricesold", "Mileage", "Year"]:
+        df[col] = pd.to_numeric(df[col], errors="coerce")
+    return df
+
+
+def fmt(value):
+    return "${:,.0f}".format(value)
+
+
+def option_list(df, column):
+    values = df[column].dropna().astype(str).str.strip()
     values = values[values.ne("") & values.ne("nan")]
     return sorted(values.unique().tolist())
 
 
-def format_currency(value: float | int | None) -> str:
-    if value is None or pd.isna(value):
-        return "N/A"
-    return "${:,.0f}".format(value)
+def nav_to(page):
+    st.session_state["page"] = page
 
 
-@st.cache_data(show_spinner=False)
-def fetch_vehicle_image(title: str, typical_year: int) -> bytes | None:
-    car_image = load_image_module()
-    image_url = car_image.get_vehicle_image(title, typical_year)
-    if not image_url:
-        return None
-    return car_image.fetch_image_bytes(image_url)
-
-
-def predict_mid_from_row(row: pd.Series) -> float | None:
-    """
-    Wrapper used by depreciation.py region analysis.
-    Returns the fair market price (mid) for one dataset row.
-    """
+def row_predict_func(row):
+    predict = load_predict_module()
     try:
-        predict = load_prediction_module()
         _, mid, _ = predict.get_price_range(
-            make=row.get("Make", "Missing"),
-            model=row.get("Model", "Missing"),
-            year=int(row.get("Year", 2019)),
-            mileage=int(row.get("Mileage", 0)),
-            body_type=row.get("BodyType", "Missing"),
-            drive_type=row.get("DriveType", "Missing"),
-            zipcode=row.get("zipcode", "Missing"),
-            engine=row.get("Engine", "Missing"),
-            trim=row.get("Trim", "Missing"),
+            make=str(row.get("Make", "Missing")),
+            model=str(row.get("Model", "Missing")),
+            year=int(row.get("Year", 2015)),
+            mileage=int(row.get("Mileage", 50000)),
+            body_type=str(row.get("BodyType", "Missing")),
+            drive_type=str(row.get("DriveType", "Missing")),
+            zipcode=str(row.get("zipcode", "Missing")),
+            engine=str(row.get("Engine", "Missing")),
+            trim=str(row.get("Trim", "Missing")),
         )
         return mid
     except Exception:
         return None
 
 
-def render_seller_tab(df: pd.DataFrame) -> None:
-    st.subheader("Seller Pricing")
-    st.write("Estimate a competitive, fair, and premium asking price for a used car.")
+def page_role():
+    st.markdown(
+        "<div style='text-align:center; padding-top:30px;'>"
+        "<div style='font-size:48px;'>🚗</div>"
+        "<h1 style='margin-bottom:0;'>CarPrice</h1>"
+        "<p style='color:gray; font-size:16px; margin-bottom:40px;'>"
+        "Used-car decision support — pricing, recommendations, and market insights.</p>"
+        "</div>",
+        unsafe_allow_html=True,
+    )
 
+    col1, col2 = st.columns(2)
+
+    with col1:
+        st.markdown("### 💰 I'm a Seller")
+        st.write(
+            "Get a data-driven price estimate for your vehicle, "
+            "see where it sits on the depreciation curve, "
+            "and compare regional pricing."
+        )
+        st.markdown(
+            "- Price range estimate *(Direction 1)*\n"
+            "- Depreciation stage analysis *(Direction 3)*\n"
+            "- Regional price comparison *(Direction 3)*\n"
+            "- What-if mileage / year simulator"
+        )
+        if st.button("Get Started as Seller", use_container_width=True, type="primary"):
+            st.session_state["role"] = "seller"
+            nav_to("profile")
+            st.rerun()
+
+    with col2:
+        st.markdown("### 🔍 I'm a Buyer")
+        st.write(
+            "Find the best value used cars within your budget, "
+            "ranked by value score with depreciation and regional insights."
+        )
+        st.markdown(
+            "- Top 10 value-ranked recommendations *(Direction 2)*\n"
+            "- Deal quality scoring *(Direction 2)*\n"
+            "- Depreciation & resale labels *(Direction 3)*\n"
+            "- Regional best-deal insights *(Direction 3)*"
+        )
+        if st.button("Get Started as Buyer", use_container_width=True, type="primary"):
+            st.session_state["role"] = "buyer"
+            nav_to("profile")
+            st.rerun()
+
+
+def page_profile():
+    role = st.session_state.get("role", "seller")
+    is_seller = role == "seller"
+
+    if st.button("← Back to role selection"):
+        nav_to("role")
+        st.rerun()
+
+    df = load_reference_data()
     makes = option_list(df, "Make")
     body_types = option_list(df, "BodyType")
     drive_types = option_list(df, "DriveType")
 
-    with st.form("seller_form"):
-        col1, col2 = st.columns(2)
-        with col1:
-            make = st.selectbox("Make", makes, index=makes.index("Toyota") if "Toyota" in makes else 0)
-            model = st.text_input("Model", value="RAV4")
-            year = st.number_input("Year", min_value=1980, max_value=2026, value=2018, step=1)
-            mileage = st.number_input("Mileage", min_value=0, max_value=400000, value=45000, step=1000)
-            zipcode = st.text_input("Zip code", value="90210")
-        with col2:
-            body_type = st.selectbox("Body type", body_types, index=body_types.index("SUV") if "SUV" in body_types else 0)
-            drive_type = st.selectbox("Drive type", drive_types, index=drive_types.index("AWD") if "AWD" in drive_types else 0)
-            trim = st.text_input("Trim", value="XLE")
-            engine = st.text_input("Engine", value="2.5L I4")
-
-        submitted = st.form_submit_button("Estimate price range", use_container_width=True)
-
-    if not submitted:
-        return
-
-    try:
-        predict = load_prediction_module()
-        low, mid, high = predict.get_price_range(
-            make=make,
-            model=model,
-            year=int(year),
-            mileage=int(mileage),
-            body_type=body_type,
-            drive_type=drive_type,
-            zipcode=zipcode,
-            engine=engine,
-            trim=trim,
-        )
-    except Exception as exc:
-        st.error("Unable to run the pricing model right now: {}".format(exc))
-        return
-
-    metric1, metric2, metric3 = st.columns(3)
-    metric1.metric("Competitive", format_currency(low))
-    metric2.metric("Fair market", format_currency(mid))
-    metric3.metric("Premium", format_currency(high))
-
+    st.title("💰 Tell us about your car" if is_seller else "🔍 Set your preferences")
     st.caption(
-        "Competitive helps the car sell faster, fair is the midpoint estimate, and premium is a more ambitious asking price."
+        "Enter your vehicle details for pricing, depreciation analysis, and regional comparison."
+        if is_seller
+        else "Set your budget and preferences to get personalized value-ranked recommendations."
     )
 
-    # =========================
-    # Depreciation insight
-    # =========================
+    if is_seller:
+        with st.form("seller_form"):
+            c1, c2 = st.columns(2)
+            with c1:
+                make = st.selectbox("Make", makes, index=makes.index("Toyota") if "Toyota" in makes else 0)
+                model = st.text_input("Model", value="RAV4")
+                year = st.number_input("Year", min_value=1990, max_value=2026, value=2018)
+                mileage = st.number_input("Mileage", min_value=0, max_value=400000, value=45000, step=1000)
+                zipcode = st.text_input("Zip Code", value="90210", help="For regional pricing")
+            with c2:
+                body = st.selectbox("Body Type", body_types, index=body_types.index("SUV") if "SUV" in body_types else 0)
+                drive = st.selectbox("Drive Type", drive_types, index=drive_types.index("AWD") if "AWD" in drive_types else 0)
+                trim = st.text_input("Trim (optional)", placeholder="e.g. XLE")
+                engine = st.text_input("Engine (optional)", placeholder="e.g. 2.5L I4")
+
+            if st.form_submit_button("Get My Estimate →", use_container_width=True, type="primary"):
+                st.session_state["profile"] = dict(
+                    make=make, model=model, year=int(year), mileage=int(mileage),
+                    body=body, drive=drive, zip=zipcode, trim=trim, engine=engine,
+                )
+                nav_to("seller_dash")
+                st.rerun()
+    else:
+        with st.form("buyer_form"):
+            c1, c2, c3 = st.columns(3)
+            with c1:
+                budget = st.number_input("Budget ($)", min_value=1000, max_value=150000, value=20000, step=500)
+                body = st.selectbox("Body Type", ["Any"] + body_types, index=0)
+            with c2:
+                drive = st.selectbox("Drive Type (optional)", ["Any"] + drive_types, index=0)
+                use_max_mil = st.checkbox("Max mileage filter", value=False)
+                max_mil = st.number_input("Max mileage", min_value=0, max_value=300000, value=80000, step=5000)
+            with c3:
+                make = st.selectbox("Preferred Make", ["Any"] + makes, index=0)
+                use_min_yr = st.checkbox("Min year filter", value=False)
+                min_yr = st.number_input("Min year", min_value=1990, max_value=2026, value=2015)
+            zipcode = st.text_input("Zip Code (optional)", value="")
+
+            if st.form_submit_button("Find Recommendations →", use_container_width=True, type="primary"):
+                st.session_state["profile"] = dict(
+                    budget=float(budget),
+                    body=body if body != "Any" else None,
+                    drive=drive if drive != "Any" else None,
+                    make=make if make != "Any" else None,
+                    max_mil=int(max_mil) if use_max_mil else None,
+                    min_yr=int(min_yr) if use_min_yr else None,
+                    zip=zipcode or None,
+                )
+                nav_to("buyer_dash")
+                st.rerun()
+
+
+def page_seller_dash():
+    p = st.session_state.get("profile")
+    if not p:
+        nav_to("role"); st.rerun(); return
+
+    if st.button("← Start over"):
+        nav_to("role"); st.rerun()
+
+    predict = load_predict_module()
+    depreciation = load_depreciation_module()
+
     try:
-        depreciation = load_depreciation_module()
+        low, mid, high = predict.get_price_range(
+            make=p["make"], model=p["model"], year=p["year"],
+            mileage=p["mileage"], body_type=p["body"], drive_type=p["drive"],
+            zipcode=p.get("zip", ""), engine=p.get("engine", ""),
+            trim=p.get("trim", ""),
+        )
+    except Exception as e:
+        st.error(f"Pricing model error: {e}")
+        return
+
+    car_age = max(2019 - p["year"], 0)
+
+    st.title(f"🚗 {p['year']} {p['make']} {p['model']}")
+    tier = "Luxury" if p["make"] in ["BMW","Mercedes-Benz","Audi","Lexus","Porsche","Tesla","Volvo","Cadillac","Jaguar","Land Rover","Acura","Infiniti","Lincoln","Maserati"] else "Mid" if p["make"] in ["Toyota","Honda","Ford","Chevrolet","Hyundai","Kia","Subaru","Mazda","Nissan","Jeep","Dodge","Ram","GMC","Volkswagen","Chrysler","Buick","Mini"] else "Economy"
+    st.caption(f"{p['mileage']:,} miles · {p['body']} · {p['drive']}"
+               + (f" · {p['trim']}" if p.get("trim") else "")
+               + f" · {tier} tier")
+
+    st.divider()
+
+    st.subheader("📊 Direction 1 · Price Estimate")
+    st.write("Three-tier pricing from quantile regression models (CatBoost Q25 / Q50 / Q75).")
+
+    m1, m2, m3 = st.columns(3)
+    m1.metric("⚡ Competitive", fmt(low), help="25th percentile — sells quickly")
+    m2.metric("⚖️ Fair Market", fmt(mid), help="50th percentile — balanced estimate")
+    m3.metric("💎 Premium", fmt(high), help="75th percentile — may sit longer")
+
+    fig_g = go.Figure(go.Indicator(
+        mode="gauge+number", value=mid,
+        number={"prefix": "$", "font": {"size": 28}},
+        title={"text": "Fair Market Value"},
+        gauge={
+            "axis": {"range": [low * 0.7, high * 1.2], "tickprefix": "$"},
+            "bar": {"color": "#dea03a"},
+            "steps": [
+                {"range": [low * 0.7, low], "color": "rgba(47,200,114,0.15)"},
+                {"range": [low, high], "color": "rgba(222,160,58,0.12)"},
+                {"range": [high, high * 1.2], "color": "rgba(232,80,80,0.12)"},
+            ],
+        },
+    ))
+    fig_g.update_layout(height=250, margin=dict(t=50, b=20, l=40, r=40))
+    st.plotly_chart(fig_g, use_container_width=True)
+
+    st.divider()
+
+    st.subheader("📉 Direction 3 · Depreciation Analysis")
+
+    try:
         dep_df = depreciation.load_data()
         avg_price = depreciation.compute_depreciation(dep_df)
 
-        car_age = max(2019 - int(year), 0)
-        future_drop = depreciation.estimate_future_drop(avg_price, car_age, years=2)
-
-        st.markdown("### Depreciation Insight")
-        insight_col1, insight_col2 = st.columns(2)
-
-        with insight_col1:
-            st.metric("Estimated value drop in next 2 years", format_currency(future_drop))
-
-        with insight_col2:
-            if car_age <= 8:
-                stage = "High depreciation stage"
-            elif car_age <= 15:
-                stage = "Moderate depreciation stage"
+        if not avg_price.empty:
+            if car_age <= 2:
+                stage, stage_color = "Steep Drop", "red"
+                stage_desc = "Your car is in the steepest depreciation phase. New cars typically lose 15–25% in the first 2 years."
+            elif car_age <= 5:
+                stage, stage_color = "Moderate Decline", "orange"
+                stage_desc = "Depreciation is slowing but still significant. Often a good time to sell before the curve flattens."
+            elif car_age <= 10:
+                stage, stage_color = "Gradual Plateau", "blue"
+                stage_desc = "Depreciation has slowed considerably. Value is relatively stable at this stage."
             else:
-                stage = "Low depreciation stage"
-            st.metric("Current depreciation stage", stage)
+                stage, stage_color = "Stable Floor", "green"
+                stage_desc = "Most depreciation has occurred. Remaining value holds steady."
 
-        st.info(
-            "This estimate is based on the average depreciation pattern by car age in the dataset."
-        )
-    except Exception as exc:
-        st.warning("Depreciation insight unavailable right now: {}".format(exc))
+            d1, d2 = st.columns(2)
+            with d1:
+                st.markdown(f"**Current Stage:** :{stage_color}[{stage}]")
+                st.write(stage_desc)
+                st.caption(f"Vehicle age: {car_age} years")
+            with d2:
+                future_drop = depreciation.estimate_future_drop(avg_price, car_age, years=2)
+                st.metric(
+                    "Estimated loss if you keep 2 more years",
+                    f"-{fmt(abs(future_drop))}" if future_drop else "N/A",
+                    delta=f"~{fmt(abs(future_drop))} less" if future_drop else None,
+                    delta_color="inverse",
+                )
 
-
-def render_buyer_tab(df: pd.DataFrame) -> None:
-    st.subheader("Buyer Recommendation")
-    st.write("Filter by budget and preferences, then rank cars by estimated value.")
-
-    body_types = option_list(df, "BodyType")
-    drive_types = ["Any"] + option_list(df, "DriveType")
-    makes = ["Any"] + option_list(df, "Make")
-
-    with st.form("buyer_form"):
-        col1, col2, col3 = st.columns(3)
-        with col1:
-            budget = st.number_input("Budget", min_value=1000, max_value=150000, value=20000, step=500)
-            body_type = st.selectbox("Body type", body_types, index=body_types.index("SUV") if "SUV" in body_types else 0)
-        with col2:
-            drive_type = st.selectbox("Drive type (optional)", drive_types, index=0)
-            use_max_mileage = st.checkbox("Max mileage filter (optional)", value=False)
-            max_mileage = st.number_input(
-                "Max mileage",
-                min_value=0,
-                max_value=300000,
-                value=80000,
-                step=5000,
-                disabled=not use_max_mileage,
+            fig_dep = go.Figure()
+            fig_dep.add_trace(go.Scatter(
+                x=avg_price["Car_Age"], y=avg_price["pricesold"],
+                mode="lines+markers", name="Avg Sale Price",
+                line=dict(color="#dea03a", width=3),
+                marker=dict(size=5), fill="tozeroy",
+                fillcolor="rgba(222,160,58,0.08)",
+            ))
+            current_row = avg_price[avg_price["Car_Age"] == car_age]
+            if not current_row.empty:
+                cv = current_row.iloc[0]["pricesold"]
+                fig_dep.add_trace(go.Scatter(
+                    x=[car_age], y=[cv], mode="markers+text",
+                    marker=dict(size=14, color="#e85050", symbol="diamond"),
+                    text=[f"Your car: {fmt(cv)}"], textposition="top center",
+                    textfont=dict(size=11, color="#e85050"), name="Your Car",
+                ))
+            fig_dep.update_layout(
+                title="Average Sale Price by Vehicle Age (all makes)",
+                xaxis_title="Vehicle Age (years)", yaxis_title="Avg Sale Price ($)",
+                height=350, margin=dict(t=50, b=40), yaxis=dict(tickprefix="$"),
             )
-        with col3:
-            make = st.selectbox("Preferred make (optional)", makes, index=0)
-            use_min_year = st.checkbox("Min year filter (optional)", value=False)
-            min_year = st.number_input(
-                "Min year",
-                min_value=1980,
-                max_value=2026,
-                value=2015,
-                step=1,
-                disabled=not use_min_year,
-            )
+            st.plotly_chart(fig_dep, use_container_width=True)
+        else:
+            st.warning("Not enough data to compute depreciation curve.")
+    except Exception as e:
+        st.warning(f"Depreciation analysis unavailable: {e}")
 
-        zipcode = st.text_input("Zip code (optional)", value="")
-        submitted = st.form_submit_button("Find recommendations", use_container_width=True)
+    st.divider()
 
-    if not submitted:
-        return
+    st.subheader("🗺️ Direction 3 · Regional Price Comparison")
+    st.caption("Where are similar cars cheaper or more expensive? Based on model residuals across regions.")
 
     try:
-        buyer_recommend = load_recommendation_module()
-        results = buyer_recommend.recommend(
-            budget=float(budget),
-            body_type=body_type,
-            drive_type=None if drive_type == "Any" else drive_type,
-            make=None if make == "Any" else make,
-            max_mileage=int(max_mileage) if use_max_mileage and max_mileage else None,
-            min_year=int(min_year) if use_min_year and min_year else None,
-            zipcode=zipcode or None,
-            top_n=10,
+        region_deals = get_cached_region_deals(top_n=8)
+
+        if not region_deals.empty:
+            fig_reg = go.Figure(go.Bar(
+                x=region_deals["region"],
+                y=region_deals["price_advantage"],
+                marker_color=[
+                    "#2fc872" if pa > 0 else "#e85050"
+                    for pa in region_deals["price_advantage"]
+                ],
+                text=[
+                    f"{fmt(pa)} savings" if pa > 0 else f"{fmt(abs(pa))} more"
+                    for pa in region_deals["price_advantage"]
+                ],
+                textposition="outside",
+            ))
+            fig_reg.update_layout(
+                height=320, margin=dict(t=30, b=40),
+                yaxis=dict(title="Price Advantage ($)", tickprefix="$"),
+                xaxis=dict(title="Region"),
+            )
+            st.plotly_chart(fig_reg, use_container_width=True)
+
+            st.dataframe(
+                region_deals[["region", "price_advantage", "deal_label", "sample_size"]]
+                .rename(columns={
+                    "region": "Region",
+                    "price_advantage": "Avg Savings ($)",
+                    "deal_label": "Deal Rating",
+                    "sample_size": "Samples",
+                }),
+                use_container_width=True, hide_index=True,
+            )
+
+            best = region_deals.iloc[0]
+            st.info(f"💡 **{best['region']}** tends to have the best deals — "
+                    f"cars sell about **{fmt(best['price_advantage'])}** below fair value on average "
+                    f"({best['deal_label']}).")
+        else:
+            st.info("Not enough regional data for comparison.")
+    except Exception as e:
+        st.warning(f"Regional analysis unavailable: {e}")
+
+    st.divider()
+
+    st.subheader("🔮 Direction 1 · What-If Simulator")
+    st.caption("Adjust mileage or year to see how the price estimate changes.")
+
+    with st.form("whatif"):
+        w1, w2 = st.columns(2)
+        with w1:
+            sim_mil = st.number_input("Mileage", min_value=0, max_value=400000,
+                                      value=p["mileage"], step=5000, key="sim_m")
+        with w2:
+            sim_yr = st.number_input("Year", min_value=1990, max_value=2026,
+                                     value=p["year"], key="sim_y")
+        sim_go = st.form_submit_button("Simulate", use_container_width=True)
+
+    if sim_go:
+        try:
+            sl, sm, sh = predict.get_price_range(
+                make=p["make"], model=p["model"], year=int(sim_yr),
+                mileage=int(sim_mil), body_type=p["body"], drive_type=p["drive"],
+                zipcode=p.get("zip", ""), engine=p.get("engine", ""),
+                trim=p.get("trim", ""),
+            )
+            sc1, sc2, sc3 = st.columns(3)
+            for col, lbl, orig, new in [
+                (sc1, "Competitive", low, sl),
+                (sc2, "Fair Market", mid, sm),
+                (sc3, "Premium", high, sh),
+            ]:
+                diff = new - orig
+                col.metric(lbl, fmt(new),
+                           delta=f"{'+' if diff > 0 else ''}{fmt(diff)}" if diff != 0 else "No change")
+        except Exception as e:
+            st.error(f"Simulation error: {e}")
+
+    st.divider()
+
+    st.subheader("💡 Pricing Tips")
+    tips = [
+        ("Start at Fair Market",
+         f"List around {fmt(mid)} to attract serious buyers while leaving negotiation room."),
+        ("Competitive for Speed",
+         f"Price at {fmt(low)} for faster interest and quicker sale."),
+    ]
+    if car_age <= 3:
+        tips.append(("Consider Selling Soon",
+                     "Your car is in the steep depreciation phase. Selling sooner preserves more value."))
+    else:
+        tips.append(("Timing Flexibility",
+                     "Your car's depreciation has stabilized. You have more flexibility on timing."))
+    try:
+        if not region_deals.empty:
+            best_r = region_deals.iloc[0]
+            tips.append(("Regional Insight",
+                         f"Cars tend to sell cheapest in {best_r['region']} "
+                         f"({best_r['deal_label']}). If buyers compare, price competitively."))
+    except Exception:
+        pass
+
+    for title, desc in tips:
+        st.markdown(f"**{title}** — {desc}")
+
+
+def page_buyer_dash():
+    p = st.session_state.get("profile")
+    if not p:
+        nav_to("role"); st.rerun(); return
+
+    if st.button("← Start over"):
+        nav_to("role"); st.rerun()
+
+    st.title("🔍 Buyer Recommendations")
+    st.caption(
+        f"Budget: **{fmt(p['budget'])}**"
+        + (f" · Body: **{p['body']}**" if p.get("body") else "")
+        + (f" · Drive: **{p['drive']}**" if p.get("drive") else "")
+        + (f" · Make: **{p['make']}**" if p.get("make") else "")
+    )
+
+    st.subheader("🔧 Refine Your Search")
+    df = load_reference_data()
+    body_types = option_list(df, "BodyType")
+    drive_types = option_list(df, "DriveType")
+    makes = option_list(df, "Make")
+
+    with st.form("buyer_filter"):
+        fc1, fc2, fc3 = st.columns(3)
+        with fc1:
+            budget = st.number_input("Budget ($)", min_value=1000, max_value=150000,
+                                     value=int(p["budget"]), step=500)
+            f_body = st.selectbox("Body Type", ["Any"] + body_types)
+        with fc2:
+            f_drive = st.selectbox("Drive Type", ["Any"] + drive_types)
+            f_make = st.selectbox("Preferred Make", ["Any"] + makes)
+        with fc3:
+            max_mil = st.number_input("Max Mileage (0 = no limit)", min_value=0,
+                                      max_value=300000, value=0, step=5000)
+            min_yr = st.number_input("Min Year (0 = no limit)", min_value=0,
+                                     max_value=2026, value=0)
+        search = st.form_submit_button("Update Results", use_container_width=True, type="primary")
+
+    b = budget if search else p["budget"]
+    fb = (f_body if f_body != "Any" else None) if search else p.get("body")
+    fd = (f_drive if f_drive != "Any" else None) if search else p.get("drive")
+    fm = (f_make if f_make != "Any" else None) if search else p.get("make")
+    mm = (max_mil if max_mil > 0 else None) if search else p.get("max_mil")
+    my = (min_yr if min_yr > 0 else None) if search else p.get("min_yr")
+    zp = p.get("zip")
+
+    try:
+        results = get_cached_recommend(
+            budget=float(b),
+            body_type=fb, drive_type=fd, make=fm,
+            max_mileage=mm, min_year=my,
+            zipcode=zp, top_n=10,
         )
-    except Exception as exc:
-        st.error("Unable to run the recommendation model right now: {}".format(exc))
+    except Exception as e:
+        st.error(f"Recommendation error: {e}")
         return
 
     if not results:
-        st.warning("No matches found for these filters. Try loosening the mileage, year, or make constraints.")
+        st.warning("No matches found. Try increasing your budget or loosening filters.")
         return
 
-    top_pick = results[0]
+    st.divider()
+
+    top = results[0]
     st.success(
-        "Top pick: {title} ({year_range}), typical price {price}, estimated fair value {fair}, confidence {confidence}.".format(
-            title=top_pick["title"],
-            year_range=top_pick["year_range"],
-            price=format_currency(top_pick["typical_price"]),
-            fair=format_currency(top_pick["predicted_fair"]),
-            confidence=top_pick["confidence"],
-        )
+        f"⭐ **Top Pick: {top['title']}** ({top['year_range']}) — "
+        f"Typical price **{fmt(top['typical_price'])}**, "
+        f"fair value **{fmt(top['predicted_fair'])}** — "
+        f"Confidence: {top['confidence']}"
     )
 
-    for start in range(0, len(results), 2):
+    s1, s2, s3, s4 = st.columns(4)
+    s1.metric("Results", len(results))
+    avg_p = sum(r["typical_price"] for r in results) // len(results)
+    s2.metric("Avg Price", fmt(avg_p))
+    best_vp = max(r.get("avg_value_pct", 0) for r in results)
+    s3.metric("Best Value", f"{best_vp:.0f}% below")
+    high_conf = sum(1 for r in results if r.get("confidence") == "High")
+    s4.metric("High Confidence", high_conf)
+
+    st.divider()
+
+    st.subheader("📋 Direction 2 · Top 10 Recommendations")
+
+    for i in range(0, len(results), 2):
         cols = st.columns(2)
-        for col, rec in zip(cols, results[start : start + 2]):
+        for col, rec in zip(cols, results[i:i + 2]):
             with col:
+                rank = i + results[i:i + 2].index(rec) + 1
+                conf = rec.get("confidence", "—")
+                conf_icon = "🟢" if conf == "High" else "🟡" if conf == "Medium" else "🔴"
+                vp = rec.get("avg_value_pct", 0)
+                deal_icon = "🟢" if vp >= 12 else "🔵" if vp >= 5 else "🟡" if vp >= 0 else "🔴"
+                deal = "Great Deal" if vp >= 12 else "Good Deal" if vp >= 5 else "Fair Deal" if vp >= 0 else "Above Market"
+
+                try:
+                    typical_year = int(str(rec.get("year_range", "")).split("-")[0])
+                except Exception:
+                    typical_year = None
+
                 with st.container(border=True):
-                    image_url = None
-                    if start < 4:
-                        image_url = fetch_vehicle_image(rec["title"], rec["typical_year"])
-                    if image_url:
-                        st.image(image_url, use_container_width=True)
+                    img_url = get_cached_image(rec["title"], typical_year)
+                    if img_url:
+                        st.image(img_url, use_container_width=True)
                     else:
-                        st.info("Image unavailable")
+                        st.markdown(
+                            "<div style='height:180px;background:rgba(128,128,128,0.1);"
+                            "display:flex;align-items:center;justify-content:center;"
+                            "color:gray;border-radius:6px;font-size:13px;'>No image</div>",
+                            unsafe_allow_html=True,
+                        )
 
-                    title_col, badge_col = st.columns([4, 1])
-                    with title_col:
-                        st.markdown("#### {}".format(rec["title"]))
-                    with badge_col:
-                        st.markdown("**{}**".format(rec["confidence"]))
+                    st.markdown(f"**#{rank} — {rec['title']}**")
+                    st.caption(f"{deal_icon} {deal} · {conf_icon} {conf} confidence")
+                    mc1, mc2 = st.columns(2)
+                    mc1.write(f"📅 **{rec.get('year_range', '—')}**")
+                    mc2.write(f"🛣️ **{rec.get('typical_mileage', 0):,} mi**")
+                    mc1.write(f"🚗 {rec.get('body_type', '—')}")
+                    mc2.write(f"⚙️ {rec.get('drive_type', '—')}")
+                    pc1, pc2 = st.columns(2)
+                    pc1.metric("Typical Price", fmt(rec["typical_price"]))
+                    pc2.metric("Fair Value", fmt(rec["predicted_fair"]))
+                    if vp > 0:
+                        st.markdown(f"↓ **{vp:.1f}%** below fair value")
+                    if rec.get("reason"):
+                        st.caption(f"💬 _{rec['reason']}_")
 
-                    st.write("Typical year: {}".format(rec["typical_year"]))
-                    st.write("Typical mileage: {:,} miles".format(rec["typical_mileage"]))
-                    st.write("Typical price: {}".format(format_currency(rec["typical_price"])))
-                    st.write("Estimated fair value: {}".format(format_currency(rec["predicted_fair"])))
+    st.divider()
 
-    # =========================
-    # Region deals insight
-    # =========================
+    st.subheader("🗺️ Direction 3 · Regional Best Deals")
+    st.caption("Which regions tend to have the best deals across all vehicles?")
+
     try:
-        depreciation = load_depreciation_module()
-        top_regions = depreciation.get_region_deals(predict_mid_from_row)
+        region_deals = get_cached_region_deals(top_n=6)
 
-        st.markdown("### Best Regions to Find Better Deals")
-        st.caption(
-            "Price advantage shows how much cheaper cars are in a region compared with model expectations."
-        )
-
-        best_region = top_regions.iloc[0]
-        st.success(
-            "Best current region: {region} — buyers save about {save} on average ({label}).".format(
-                region=best_region["region"],
-                save=format_currency(best_region["price_advantage"]),
-                label=best_region["deal_label"],
+        if not region_deals.empty:
+            fig_br = go.Figure(go.Bar(
+                x=region_deals["region"],
+                y=region_deals["price_advantage"],
+                marker_color=[
+                    "#2fc872" if pa > 0 else "#e85050"
+                    for pa in region_deals["price_advantage"]
+                ],
+                text=region_deals["deal_label"],
+                textposition="outside",
+            ))
+            fig_br.update_layout(
+                height=300, margin=dict(t=20, b=40),
+                yaxis=dict(tickprefix="$", title="Avg Savings vs Fair Value"),
             )
-        )
+            st.plotly_chart(fig_br, use_container_width=True)
 
-        display_regions = top_regions[["region", "price_advantage", "deal_label", "sample_size"]].copy()
-        display_regions.columns = ["Region", "You Save", "Deal Level", "Sample Size"]
-        display_regions["You Save"] = display_regions["You Save"].apply(format_currency)
+            st.info(f"💡 **{region_deals.iloc[0]['region']}** has the best deals — "
+                    f"{region_deals.iloc[0]['deal_label']}.")
+        else:
+            st.info("Not enough data for regional analysis.")
+    except Exception as e:
+        st.warning(f"Regional analysis unavailable: {e}")
 
-        st.dataframe(display_regions, use_container_width=True)
+    st.divider()
 
-        chart_df = top_regions.copy()
-        chart_df = chart_df.sort_values("price_advantage", ascending=True)
+    st.subheader("⚖️ Direction 2 · Side-by-Side Comparison")
+    st.caption("Select 2–3 cars to compare.")
 
-        st.bar_chart(
-            data=chart_df.set_index("region")["price_advantage"],
-            use_container_width=True,
-        )
+    titles = [r["title"] for r in results]
+    selected = st.multiselect("Choose cars to compare", titles, max_selections=3)
 
-    except Exception as exc:
-        st.error("Regional insight error: {}".format(exc))
+    if len(selected) >= 2:
+        compare = [r for r in results if r["title"] in selected]
+        comp = {"Metric": [
+            "Price", "Fair Value", "Value Gap", "Year Range",
+            "Mileage", "Body", "Drive", "Confidence", "Samples",
+        ]}
+        for c in compare:
+            vp = c.get("avg_value_pct", 0)
+            comp[c["title"]] = [
+                fmt(c["typical_price"]), fmt(c["predicted_fair"]),
+                f"{vp:.1f}%", c.get("year_range", "—"),
+                f"{c.get('typical_mileage', 0):,} mi",
+                c.get("body_type", "—"), c.get("drive_type", "—"),
+                c.get("confidence", "—"), c.get("sample_count", "—"),
+            ]
+        st.dataframe(pd.DataFrame(comp).set_index("Metric"), use_container_width=True)
+    elif selected:
+        st.caption("Select at least 2 cars to compare.")
 
 
-def main() -> None:
-    st.set_page_config(
-        page_title="CarPrice Demo",
-        page_icon="🚗",
-        layout="wide",
-    )
+def main():
+    st.set_page_config(page_title="CarPrice", page_icon="🚗", layout="wide")
 
-    st.title("CarPrice Streamlit Demo")
-    st.caption("Direction 1: seller pricing. Direction 2: buyer recommendation. Direction 3: depreciation and region insights.")
+    if "page" not in st.session_state:
+        st.session_state["page"] = "role"
 
-    try:
-        df = load_reference_data()
-    except Exception as exc:
-        st.error("Unable to load the project dataset: {}".format(exc))
-        return
+    page = st.session_state["page"]
 
-    tab1, tab2 = st.tabs(["Seller", "Buyer"])
-    with tab1:
-        render_seller_tab(df)
-    with tab2:
-        render_buyer_tab(df)
+    if page == "role":
+        page_role()
+    elif page == "profile":
+        page_profile()
+    elif page == "seller_dash":
+        page_seller_dash()
+    elif page == "buyer_dash":
+        page_buyer_dash()
+    else:
+        page_role()
 
 
 if __name__ == "__main__":
