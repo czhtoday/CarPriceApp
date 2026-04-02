@@ -1,9 +1,8 @@
 """
 Direction 2: Buyer Recommendation.
 
-Recommend model-level options, not individual historical sale records.
-The ranking combines pricing-model value, mileage/year fit, and confidence
-based on the number of comparable examples in the dataset.
+Recommend individual historical sale records and compare their observed sale
+price against the Direction 1 fair-value estimate.
 """
 
 from pathlib import Path
@@ -13,9 +12,23 @@ import numpy as np
 import pandas as pd
 
 try:
-    from .predict import _brand_tier, _normalize_brand, get_price_range
+    from .predict import (
+        _brand_tier,
+        _normalize_brand,
+        _model_q25,
+        _model_q50,
+        _model_q75,
+        CPI_ADJUSTMENT,
+    )
 except ImportError:
-    from predict import _brand_tier, _normalize_brand, get_price_range
+    from predict import (
+        _brand_tier,
+        _normalize_brand,
+        _model_q25,
+        _model_q50,
+        _model_q75,
+        CPI_ADJUSTMENT,
+    )
 
 
 _BAD_TEXT_PATTERN = re.compile(
@@ -137,50 +150,61 @@ def _confidence_label(sample_count):
     return "Low"
 
 
-def _confidence_score(sample_count):
+def _confidence_help(sample_count):
     if sample_count >= 100:
-        return 1.0
+        return "High data support"
     if sample_count >= 30:
-        return 0.7
-    if sample_count >= 15:
-        return 0.45
-    return 0.2
+        return "Moderate data support"
+    return "Limited data support"
 
 
-def _bounded_ratio(numerator, denominator, cap):
-    if denominator <= 0:
-        if isinstance(numerator, pd.Series):
-            return pd.Series(0.0, index=numerator.index)
-        return 0.0
-    ratio = numerator / denominator
-    if isinstance(ratio, pd.Series):
-        return ratio.clip(-cap, cap) / cap
-    return max(min(ratio, cap), -cap) / cap
-
-
-def _build_reason(row):
+def _build_reason(value_pct, sample_count, mileage, max_mileage, year, min_year):
     reasons = []
-
-    if row["avg_value_pct"] >= 12:
+    if value_pct >= 18:
+        reasons.append("priced well below the model's fair-value estimate")
+    elif value_pct >= 8:
         reasons.append("priced below the model's fair-value estimate")
-    elif row["avg_value_pct"] >= 5:
-        reasons.append("slightly below the model's fair-value estimate")
 
-    if row["median_mileage"] <= row["max_mileage_input"] * 0.75:
+    if max_mileage is not None and mileage <= max_mileage * 0.75:
         reasons.append("lower mileage than your stated limit")
 
-    if row["median_year"] >= row["min_year_input"] + 2:
+    if min_year is not None and year >= min_year + 2:
         reasons.append("newer than your minimum year target")
 
-    if row["confidence"] == "High":
+    confidence = _confidence_label(sample_count)
+    if confidence == "High":
         reasons.append("supported by many comparable sales")
-    elif row["confidence"] == "Medium":
+    elif confidence == "Medium":
         reasons.append("supported by a reasonable number of comparable sales")
 
     if not reasons:
-        reasons.append("a balanced match for your filters")
+        reasons.append("a solid match for your filters")
 
     return "; ".join(reasons)
+
+
+def _predict_price_ranges_batch(candidates_df):
+    batch = pd.DataFrame({
+        "Mileage": candidates_df["Mileage"].astype(float),
+        "Car_Age": candidates_df["Car_Age"].astype(float),
+        "miles_per_year": candidates_df["Mileage"].astype(float) / (candidates_df["Car_Age"].astype(float) + 1),
+        "Engine": candidates_df["Engine"].fillna("Missing").astype(str),
+        "Trim": candidates_df["Trim"].fillna("Missing").astype(str),
+        "DriveType": candidates_df["DriveType"].fillna("Missing").astype(str),
+        "BodyType": candidates_df["BodyType"].fillna("Missing").astype(str),
+        "brand_clean": candidates_df["brand_clean"].astype(str),
+        "brand_tier": candidates_df["brand_tier"].astype(str),
+        "Model": candidates_df["Model"].fillna("Missing").astype(str),
+        "zip3": candidates_df["zip3"].astype(str),
+    })
+
+    lows = _model_q25.predict(batch) * CPI_ADJUSTMENT
+    mids = _model_q50.predict(batch) * CPI_ADJUSTMENT
+    highs = _model_q75.predict(batch) * CPI_ADJUSTMENT
+
+    stacked = np.column_stack([lows, mids, highs])
+    stacked.sort(axis=1)
+    return stacked[:, 0], stacked[:, 1], stacked[:, 2]
 
 
 def _load_data():
@@ -228,14 +252,21 @@ def recommend(
     top_n: int = 10,
 ) -> list[dict]:
     """
-    Recommend model-level options for a buyer.
+    Recommend individual historical sale records for a buyer.
 
-    Returns aggregated recommendations, each representing a make/model family
-    with typical pricing, mileage, year range, confidence, and explanation.
+    Each returned item is a single sold-car example, scored by how far below
+    the Direction 1 fair-value estimate it appears.
     """
     candidates = _df.copy()
 
     candidates = candidates[candidates["pricesold"] <= budget]
+
+    # Keep recommendations near the buyer's actual price range instead of
+    # surfacing very cheap but irrelevant vehicles.
+    if budget >= 15000:
+        candidates = candidates[candidates["pricesold"] >= budget * 0.82]
+    elif budget >= 8000:
+        candidates = candidates[candidates["pricesold"] >= budget * 0.75]
 
     if body_type:
         normalized_body = _normalize_body_type(body_type)
@@ -258,133 +289,79 @@ def recommend(
     if len(candidates) == 0:
         return []
 
-    scored_rows = []
-    for _, row in candidates.iterrows():
-        low, mid, high = get_price_range(
-            make=row["Make"],
-            model=row["Model"],
-            year=int(row["Year"]),
-            mileage=int(row["Mileage"]),
-            body_type=row.get("BodyType", "Missing"),
-            drive_type=row.get("DriveType", "Missing"),
-            zipcode=str(row.get("zipcode", "Missing")),
-            engine=str(row.get("Engine", "Missing")),
-            trim=str(row.get("Trim", "Missing")),
-        )
+    candidates = candidates.reset_index(drop=True)
+    lows, mids, highs = _predict_price_ranges_batch(candidates)
 
-        actual = float(row["pricesold"])
-        value_score = mid - actual
-        value_pct = (value_score / mid * 100) if mid > 0 else 0.0
+    actuals = candidates["pricesold"].astype(float).to_numpy()
+    value_scores = mids - actuals
+    value_pcts = np.where(mids > 0, value_scores / mids * 100, 0.0)
 
-        if value_pct > 50 or value_pct < -35:
-            continue
+    price_gap_from_budget = np.abs(actuals - float(budget))
+    if budget > 0:
+        budget_fit = 1.0 - np.clip(price_gap_from_budget / float(budget), 0, 1)
+    else:
+        budget_fit = np.zeros_like(actuals)
 
-        scored_rows.append(
-            {
-                "make": row["Make"],
-                "brand_clean": row["brand_clean"],
-                "model": row["Model"],
-                "body_type": row["body_type_clean"],
-                "drive_type": row["drive_type_clean"],
-                "year": int(row["Year"]),
-                "mileage": int(row["Mileage"]),
-                "actual_price": actual,
-                "predicted_competitive": low,
-                "predicted_fair": mid,
-                "predicted_premium": high,
-                "value_score": value_score,
-                "value_pct": value_pct,
-                "sample_count": int(row["_model_sample_count"]),
-            }
-        )
-
-    if not scored_rows:
-        return []
-
-    scored_df = pd.DataFrame(scored_rows)
-
-    grouped = (
-        scored_df.groupby(["brand_clean", "model"], as_index=False)
-        .agg(
-            make=("make", "first"),
-            body_type=("body_type", lambda s: s.mode().iloc[0] if not s.mode().empty else s.iloc[0]),
-            drive_type=("drive_type", lambda s: s.mode().iloc[0] if not s.mode().empty else s.iloc[0]),
-            year_min=("year", "min"),
-            year_max=("year", "max"),
-            median_year=("year", "median"),
-            median_mileage=("mileage", "median"),
-            typical_price=("actual_price", "median"),
-            predicted_competitive=("predicted_competitive", "median"),
-            predicted_fair=("predicted_fair", "median"),
-            predicted_premium=("predicted_premium", "median"),
-            avg_value_score=("value_score", "mean"),
-            avg_value_pct=("value_pct", "mean"),
-            candidate_count=("model", "size"),
-            sample_count=("sample_count", "max"),
-        )
-    )
-
-    effective_max_mileage = max_mileage if max_mileage else 120000
-    effective_min_year = min_year if min_year else 2005
-
-    grouped["value_component"] = grouped["avg_value_pct"].clip(-10, 20) / 20.0
-    grouped["mileage_component"] = 1 - grouped["median_mileage"].clip(0, effective_max_mileage) / float(effective_max_mileage)
-    grouped["year_component"] = _bounded_ratio(
-        grouped["median_year"] - effective_min_year,
-        max(2025 - effective_min_year, 1),
-        1.0,
-    )
-    grouped["confidence_component"] = grouped["sample_count"].apply(_confidence_score)
-
-    grouped["buyer_score"] = (
-        0.45 * grouped["value_component"]
-        + 0.20 * grouped["mileage_component"]
-        + 0.15 * grouped["year_component"]
-        + 0.20 * grouped["confidence_component"]
-    )
-
-    grouped = grouped[grouped["avg_value_pct"] > -5].copy()
-
-    if grouped.empty:
-        return []
-
-    grouped["confidence"] = grouped["sample_count"].apply(_confidence_label)
-    grouped["max_mileage_input"] = effective_max_mileage
-    grouped["min_year_input"] = effective_min_year
-    grouped["reason"] = grouped.apply(_build_reason, axis=1)
-
-    grouped = grouped.sort_values(
-        by=["buyer_score", "avg_value_pct", "sample_count"],
-        ascending=False,
-    )
+    mask = (value_pcts <= 35) & (value_pcts >= -20)
 
     recommendations = []
-    for _, row in grouped.head(top_n).iterrows():
+    for i in np.where(mask)[0]:
+        row = candidates.iloc[i]
+        actual = float(actuals[i])
+        value_pct = float(value_pcts[i])
+        value_score = float(value_scores[i])
+        sample_count = int(row["_model_sample_count"])
+        confidence = _confidence_label(sample_count)
+        reason = _build_reason(
+            value_pct=value_pct,
+            sample_count=sample_count,
+            mileage=int(row["Mileage"]),
+            max_mileage=max_mileage,
+            year=int(row["Year"]),
+            min_year=min_year,
+        )
+
+        normalized_value = min(max(value_pct, 0.0), 25.0) / 25.0
+        buyer_score = 0.50 * normalized_value + 0.50 * float(budget_fit[i])
+
         recommendations.append(
             {
-                "make": row["make"],
-                "model": row["model"],
-                "title": "{} {}".format(row["make"], row["model"]),
-                "body_type": row["body_type"],
-                "drive_type": row["drive_type"],
-                "year_range": "{}-{}".format(int(row["year_min"]), int(row["year_max"])),
-                "typical_year": int(round(row["median_year"])),
-                "typical_mileage": int(round(row["median_mileage"])),
-                "typical_price": round(float(row["typical_price"]), 2),
-                "predicted_competitive": round(float(row["predicted_competitive"]), 2),
-                "predicted_fair": round(float(row["predicted_fair"]), 2),
-                "predicted_premium": round(float(row["predicted_premium"]), 2),
-                "avg_value_score": round(float(row["avg_value_score"]), 2),
-                "avg_value_pct": round(float(row["avg_value_pct"]), 1),
-                "buyer_score": round(float(row["buyer_score"]), 3),
-                "sample_count": int(row["sample_count"]),
-                "candidate_count": int(row["candidate_count"]),
-                "confidence": row["confidence"],
-                "reason": row["reason"],
+                "id": int(row["ID"]) if not pd.isna(row.get("ID")) else None,
+                "make": row["Make"],
+                "model": row["Model"],
+                "title": "{} {} {}".format(int(row["Year"]), row["Make"], row["Model"]),
+                "body_type": row["body_type_clean"],
+                "drive_type": row["drive_type_clean"],
+                "year_range": str(int(row["Year"])),
+                "typical_year": int(row["Year"]),
+                "typical_mileage": int(row["Mileage"]),
+                "listing_price": round(actual, 2),
+                "typical_price": round(actual, 2),
+                "predicted_competitive": round(float(lows[i]), 2),
+                "predicted_fair": round(float(mids[i]), 2),
+                "predicted_premium": round(float(highs[i]), 2),
+                "avg_value_score": round(value_score, 2),
+                "avg_value_pct": round(value_pct, 1),
+                "buyer_score": round(buyer_score, 3),
+                "budget_fit": round(float(budget_fit[i]), 3),
+                "sample_count": sample_count,
+                "candidate_count": 1,
+                "confidence": confidence,
+                "confidence_help": _confidence_help(sample_count),
+                "data_support": _confidence_help(sample_count),
+                "reason": reason,
+                "trim": "" if pd.isna(row.get("Trim")) else str(row.get("Trim")),
+                "engine": "" if pd.isna(row.get("Engine")) else str(row.get("Engine")),
+                "zipcode": "" if pd.isna(row.get("zipcode")) else str(row.get("zipcode")),
             }
         )
 
-    return recommendations
+    recommendations.sort(
+        key=lambda r: (r["buyer_score"], r["avg_value_pct"], r["listing_price"]),
+        reverse=True,
+    )
+
+    return recommendations[:top_n]
 
 
 if __name__ == "__main__":
@@ -392,9 +369,9 @@ if __name__ == "__main__":
     results = recommend(budget=20000, body_type="SUV", top_n=10)
 
     for i, r in enumerate(results, 1):
-        print("{}. {} ({})".format(i, r["title"], r["year_range"]))
+        print("{}. {}".format(i, r["title"]))
         print(
-            "   Typical price: ${:,.0f} | Fair value: ${:,.0f} | Value gap: ${:,.0f} ({:+.0f}%)".format(
+            "   Sold price: ${:,.0f} | Fair value: ${:,.0f} | Value gap: ${:,.0f} ({:+.0f}%)".format(
                 r["typical_price"], r["predicted_fair"], r["avg_value_score"], r["avg_value_pct"]
             )
         )

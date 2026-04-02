@@ -105,6 +105,11 @@ def option_list(df, column, normalizer=None, min_count=0):
     return sorted(values.unique().tolist())
 
 
+def preferred_body_type_options(body_types):
+    preferred_order = ["SUV", "Sedan", "Pickup", "Coupe", "Convertible"]
+    return [body for body in preferred_order if body in body_types]
+
+
 def nav_to(page):
     st.session_state["page"] = page
 
@@ -189,7 +194,9 @@ def page_profile():
     predict = load_predict_module()
     recommend = load_recommend_module()
     makes = option_list(df, "Make", normalizer=predict._normalize_brand, min_count=10)
-    body_types = option_list(df, "BodyType", normalizer=recommend._normalize_body_type)
+    body_types = preferred_body_type_options(
+        option_list(df, "BodyType", normalizer=recommend._normalize_body_type)
+    )
     drive_types = option_list(df, "DriveType", normalizer=recommend._normalize_drive_type)
 
     st.title("💰 Tell us about your car" if is_seller else "🔍 Set your preferences")
@@ -225,7 +232,7 @@ def page_profile():
         with st.form("buyer_form"):
             c1, c2, c3 = st.columns(3)
             with c1:
-                budget = st.number_input("Budget ($)", min_value=1000, max_value=150000, value=20000, step=500)
+                budget = st.number_input("Budget ($)", min_value=1000, max_value=150000, value=18000, step=500)
                 body = st.selectbox("Body Type", ["Any"] + body_types, index=0)
             with c2:
                 drive = st.selectbox("Drive Type (optional)", ["Any"] + drive_types, index=0)
@@ -375,25 +382,45 @@ def page_seller_dash():
     st.divider()
 
     st.subheader("🔮 What-If Simulator")
-    st.caption("Adjust mileage or year to see how the price estimate changes.")
+    st.caption("Estimate how your car's value changes if you keep driving it and sell later.")
 
     with st.form("whatif"):
         w1, w2 = st.columns(2)
         with w1:
-            sim_mil = st.number_input("Mileage", min_value=0, max_value=400000,
-                                      value=p["mileage"], step=5000, key="sim_m")
+            years_to_wait = st.selectbox(
+                "When would you sell?",
+                options=[0, 1, 2, 3, 4, 5],
+                format_func=lambda x: "Sell now" if x == 0 else "In {} year{}".format(x, "" if x == 1 else "s"),
+                index=0,
+            )
         with w2:
-            sim_yr = st.number_input("Year", min_value=1990, max_value=2026,
-                                     value=p["year"], key="sim_y")
+            extra_miles = st.number_input(
+                "Additional miles before selling",
+                min_value=0,
+                max_value=200000,
+                value=0,
+                step=5000,
+                key="sim_extra_miles",
+            )
         sim_go = st.form_submit_button("Simulate", use_container_width=True)
 
     if sim_go:
         try:
+            sim_mil = int(p["mileage"] + extra_miles)
+            # The pricing model encodes age through vehicle year, so simulating
+            # a future sale means holding the same car for more years.
+            sim_vehicle_year = int(p["year"] - years_to_wait)
             sl, sm, sh = predict.get_price_range(
-                make=p["make"], model=p["model"], year=int(sim_yr),
-                mileage=int(sim_mil), body_type=p["body"], drive_type=p["drive"],
+                make=p["make"], model=p["model"], year=sim_vehicle_year,
+                mileage=sim_mil, body_type=p["body"], drive_type=p["drive"],
                 zipcode=p.get("zip", ""), engine=p.get("engine", ""),
                 trim=p.get("trim", ""),
+            )
+            st.caption(
+                "Scenario: sell {} with {:,} additional miles.".format(
+                    "now" if years_to_wait == 0 else "in {} year{}".format(years_to_wait, "" if years_to_wait == 1 else "s"),
+                    extra_miles,
+                )
             )
             sc1, sc2, sc3 = st.columns(3)
             for col, lbl, orig, new in [
@@ -402,8 +429,18 @@ def page_seller_dash():
                 (sc3, "Premium", high, sh),
             ]:
                 diff = new - orig
-                col.metric(lbl, fmt(new),
-                           delta=f"{'+' if diff > 0 else ''}{fmt(diff)}" if diff != 0 else "No change")
+                if diff > 0:
+                    delta_text = "+{}".format(fmt(diff))
+                elif diff < 0:
+                    delta_text = "-{}".format(fmt(abs(diff)))
+                else:
+                    delta_text = "No change"
+                col.metric(
+                    lbl,
+                    fmt(new),
+                    delta=delta_text,
+                    delta_color="normal",
+                )
         except Exception as e:
             st.error(f"Simulation error: {e}")
 
@@ -455,7 +492,9 @@ def page_buyer_dash():
     df = load_reference_data()
     predict = load_predict_module()
     recommend = load_recommend_module()
-    body_types = option_list(df, "BodyType", normalizer=recommend._normalize_body_type)
+    body_types = preferred_body_type_options(
+        option_list(df, "BodyType", normalizer=recommend._normalize_body_type)
+    )
     drive_types = option_list(df, "DriveType", normalizer=recommend._normalize_drive_type)
     makes = option_list(df, "Make", normalizer=predict._normalize_brand, min_count=10)
 
@@ -503,19 +542,21 @@ def page_buyer_dash():
     top = results[0]
     st.success(
         f"⭐ **Top Pick: {top['title']}** ({top['year_range']}) — "
-        f"Typical price **{fmt(top['typical_price'])}**, "
+        f"listing price **{fmt(top['listing_price'])}**, "
         f"fair value **{fmt(top['predicted_fair'])}** — "
-        f"Confidence: {top['confidence']}"
+        f"{top.get('data_support', top.get('confidence_help', top['confidence']))}"
     )
 
     s1, s2, s3, s4 = st.columns(4)
     s1.metric("Results", len(results))
-    avg_p = sum(r["typical_price"] for r in results) // len(results)
-    s2.metric("Avg Price", fmt(avg_p))
+    avg_p = sum(r["listing_price"] for r in results) // len(results)
+    s2.metric("Avg Listing Price", fmt(avg_p))
     best_vp = max(r.get("avg_value_pct", 0) for r in results)
     s3.metric("Best Value", f"{best_vp:.0f}% below")
     high_conf = sum(1 for r in results if r.get("confidence") == "High")
-    s4.metric("High Confidence", high_conf)
+    s4.metric("Strong Data Support", high_conf)
+
+    st.caption("Data support reflects how many comparable sales exist for that make/model in the dataset.")
 
     st.divider()
 
@@ -527,6 +568,7 @@ def page_buyer_dash():
             with col:
                 rank = i + results[i:i + 2].index(rec) + 1
                 conf = rec.get("confidence", "—")
+                data_support = rec.get("data_support", rec.get("confidence_help", conf))
                 conf_icon = "🟢" if conf == "High" else "🟡" if conf == "Medium" else "🔴"
                 vp = rec.get("avg_value_pct", 0)
                 deal_icon = "🟢" if vp >= 12 else "🔵" if vp >= 5 else "🟡" if vp >= 0 else "🔴"
@@ -550,14 +592,14 @@ def page_buyer_dash():
                         )
 
                     st.markdown(f"**#{rank} — {rec['title']}**")
-                    st.caption(f"{deal_icon} {deal} · {conf_icon} {conf} confidence")
+                    st.caption(f"{deal_icon} {deal} · {conf_icon} {data_support}")
                     mc1, mc2 = st.columns(2)
                     mc1.write(f"📅 **{rec.get('year_range', '—')}**")
                     mc2.write(f"🛣️ **{rec.get('typical_mileage', 0):,} mi**")
                     mc1.write(f"🚗 {rec.get('body_type', '—')}")
                     mc2.write(f"⚙️ {rec.get('drive_type', '—')}")
                     pc1, pc2 = st.columns(2)
-                    pc1.metric("Typical Price", fmt(rec["typical_price"]))
+                    pc1.metric("Listing Price", fmt(rec["listing_price"]))
                     pc2.metric("Fair Value", fmt(rec["predicted_fair"]))
                     if vp > 0:
                         st.markdown(f"↓ **{vp:.1f}%** below fair value")

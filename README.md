@@ -1,105 +1,158 @@
 # CarPrice
 
-CarPrice is a used-car decision support app built for two types of users:
+CarPrice is a Streamlit app for used-car decision support. It is built around two user roles:
 
-- Sellers who want a reasonable asking price for their car
-- Buyers who want to find used cars that fit their budget and offer strong value
+- Sellers who want a data-driven estimate of what their car is worth today
+- Buyers who want to find used cars in the dataset that look like strong value relative to a pricing model
 
-This repository currently contains the implemented work for:
+The app combines a quantile regression pricing model, buyer-side ranking logic, depreciation analysis, and regional market comparisons into a single interactive workflow.
 
-1. Seller pricing
-2. Buyer recommendation
+## What The App Does
 
-Later project directions can be added to this repository as the team continues development.
+### Seller Experience
 
-## Project Motivation
+For a seller, the app can:
 
-Buying or selling a used car often involves a lot of uncertainty. Sellers may not know how much their car is worth, and buyers may struggle to identify which vehicles are actually good value within their budget.
+- estimate a competitive, fair-market, and premium price range
+- show where the car sits on a depreciation curve
+- estimate how much value may be lost if the seller waits longer to sell
+- simulate how price changes if the car is driven more miles or sold a few years later
+- provide pricing tips based on the estimate and depreciation stage
 
-Our project aims to turn historical used-car sales data into a simple web experience that gives users practical guidance based on their role:
+### Buyer Experience
 
-- Sellers receive a suggested price range for their vehicle
-- Buyers receive filtered and ranked recommendations based on preferences and budget
+For a buyer, the app can:
 
-## Current Features
+- filter cars by budget, body type, drive type, make, mileage, and minimum year
+- rank individual vehicle records by comparing observed price against the model's fair-value estimate
+- highlight the top deals within the buyer's budget range
+- show image previews when available
+- compare shortlisted cars side by side
+- summarize which US regions tend to show the best deals overall
 
-### Seller Pricing
+## Current Modeling Logic
 
-The seller-facing module estimates a price range for a vehicle using its:
+### Price Prediction
 
-- make
-- model
-- year
-- mileage
-- body type
-- drive type
-- zip code
-- optional trim and engine details
+The seller pricing module uses three trained CatBoost quantile models:
 
-The pricing output includes:
+- `model_q25.cbm`
+- `model_q50.cbm`
+- `model_q75.cbm`
 
-- a competitive price
-- a fair market estimate
-- a premium price
+These are used in `predict.py` to produce:
 
-This module is powered by three trained CatBoost quantile models and is exposed through `predict.py`.
+- competitive price
+- fair-market estimate
+- premium price
+
+The current prediction logic also:
+
+- aligns vehicle age to the original training era
+- applies a CPI-style adjustment so estimates are closer to current-dollar values
 
 ### Buyer Recommendation
 
-The buyer-facing module helps users search for cars that match their constraints, such as:
+The buyer recommendation module is implemented in `buyer_recommend.py`.
 
-- budget
-- body type
-- drive type
-- preferred make
-- maximum mileage
-- minimum year
+It works by:
 
-Candidate vehicles are ranked by comparing their historical sale price against the fair-value estimate produced by the seller pricing model.
+1. filtering historical sold-car records using the buyer's constraints
+2. predicting a fair value for each candidate using the pricing model
+3. comparing actual observed price against predicted fair value
+4. ranking cars by a combination of value gap and budget fit
 
-This means the recommendation system builds directly on top of the pricing model instead of acting as a completely separate pipeline.
+The current buyer view recommends individual vehicle records rather than aggregated model families.
 
-This module is implemented in `buyer_recommend.py`.
+### Depreciation And Regional Analysis
 
-### Streamlit Demo
+The seller and buyer dashboards also use `depreciation.py` to:
 
-The current interface is a Streamlit app with two views:
+- compute average price by vehicle age
+- estimate future depreciation
+- evaluate regional pricing residuals
 
-- `Seller`: enter a car's details and estimate a price range
-- `Buyer`: enter budget and preferences and view ranked recommendations
+Regional analysis now focuses on broad US regions and excludes non-US / unknown zip-based regions from the final display.
 
-The demo entry point is `streamlit_app.py`.
+## Main Files
 
-## Repository Structure
+- `streamlit_app.py`
+  Main application entry point and UI flow
 
-- `streamlit_app.py`: Streamlit interface for both user roles
-- `predict.py`: seller pricing inference logic
-- `buyer_recommend.py`: buyer recommendation logic
-- `used_car_sales.csv`: dataset used by the current demo
-- `model_q25.cbm`: 25th percentile pricing model
-- `model_q50.cbm`: 50th percentile pricing model
-- `model_q75.cbm`: 75th percentile pricing model
-- `feature_medians.json`: saved numeric feature statistics
+- `predict.py`
+  Seller-side quantile price prediction
 
-## How to Run
+- `buyer_recommend.py`
+  Buyer-side filtering, scoring, and recommendation logic
 
-Install the required dependencies in the same Python environment:
+- `depreciation.py`
+  Depreciation calculations and regional deal analysis
+
+- `car_image.py`
+  Vehicle image lookup helper using Wikipedia search thumbnails
+
+- `api.py`
+  Optional FastAPI wrapper for seller and buyer endpoints
+
+- `used_car_sales.csv`
+  Main dataset used by the app
+
+- `model_q25.cbm`, `model_q50.cbm`, `model_q75.cbm`
+  Trained CatBoost pricing models
+
+## Research / Evaluation Files
+
+These files support model development and evaluation and are not required to launch the Streamlit app:
+
+- `benchmark_quantile_models.py`
+- `evaluate_temporal.py`
+- `plot_quantile_benchmark.py`
+- `quantile_benchmark_cv_results.csv`
+- `quantile_benchmark_cv_results_folds.csv`
+- `quantile_benchmark_plots.png`
+- `eval_temporal_plots.png`
+
+## How To Run
+
+Install the required Python packages in the same environment:
 
 ```bash
-pip install streamlit catboost pandas numpy
+pip install streamlit catboost pandas numpy plotly fastapi uvicorn pydantic
 ```
 
-Then launch the app from the repository root:
+Then start the Streamlit app from the repository root:
 
 ```bash
 streamlit run streamlit_app.py
 ```
 
-## Current Scope
+## Optional API Mode
 
-This repository reflects the currently implemented part of the project:
+If you want to run the FastAPI wrapper instead of the Streamlit app:
 
-- seller pricing
-- buyer recommendation
+```bash
+python -m uvicorn api:app --reload
+```
 
-The project is still evolving, and additional modules can be added by other team members as new directions are completed.
+This exposes:
+
+- `GET /health`
+- `POST /api/seller/price`
+- `POST /api/buyer/recommend`
+
+## Notes
+
+- Buyer recommendations are based on historical sale records in the dataset, not live marketplace inventory.
+- Vehicle images are fetched from Wikipedia thumbnails when available, so some cards may not have images.
+- The app currently uses the historical dataset included in the repository and does not yet connect to external listing sources.
+
+## Project Status
+
+This repository reflects the completed current version of the CarPrice app:
+
+- Streamlit-based UI
+- seller pricing workflow
+- buyer recommendation workflow
+- depreciation analysis
+- regional best-deal insights
+- model benchmarking and evaluation scripts
