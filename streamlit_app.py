@@ -139,9 +139,14 @@ def page_role():
         "<div style='font-size:48px;'>🚗</div>"
         "<h1 style='margin-bottom:0;'>CarPrice</h1>"
         "<p style='color:gray; font-size:16px; margin-bottom:40px;'>"
-        "Used-car decision support — pricing, recommendations, and market insights.</p>"
+        "A used-car decision assistant for pricing, value comparison, and market timing.</p>"
         "</div>",
         unsafe_allow_html=True,
+    )
+
+    st.info(
+        "Choose a path to get started. Sellers receive a pricing recommendation and resale outlook. "
+        "Buyers see the strongest-value cars in the dataset for their budget."
     )
 
     col1, col2 = st.columns(2)
@@ -150,13 +155,12 @@ def page_role():
         with st.container(border=True):
             st.markdown("### 💰 I'm a Seller")
             st.write(
-                "Get a data-driven price estimate for your vehicle "
-                "and see where it sits on the depreciation curve."
+                "Estimate what your car is worth today and see whether selling now or later is the better move."
             )
             st.markdown(
-                "- Price range estimate\n"
+                "- Recommended asking-price range\n"
                 "- Depreciation stage analysis\n"
-                "- What-if mileage / year simulator"
+                "- Hold-or-sell simulator"
             )
             if st.button("Get Started as Seller", use_container_width=True, type="primary"):
                 st.session_state["role"] = "seller"
@@ -167,13 +171,12 @@ def page_role():
         with st.container(border=True):
             st.markdown("### 🔍 I'm a Buyer")
             st.write(
-                "Find the best value used cars within your budget, "
-                "ranked by value score with depreciation and regional insights."
+                "Find cars that look like strong value for your budget by comparing listed prices with model-based fair value."
             )
             st.markdown(
                 "- Top 10 value-ranked recommendations\n"
-                "- Deal quality scoring\n"
-                "- Depreciation & resale labels\n"
+                "- Estimated savings vs fair value\n"
+                "- Data-support labels\n"
                 "- Regional best-deal insights"
             )
             if st.button("Get Started as Buyer", use_container_width=True, type="primary"):
@@ -201,9 +204,9 @@ def page_profile():
 
     st.title("💰 Tell us about your car" if is_seller else "🔍 Set your preferences")
     st.caption(
-        "Enter your vehicle details for pricing and depreciation analysis."
+        "Enter your vehicle details to get a price recommendation and resale outlook."
         if is_seller
-        else "Set your budget and preferences to get personalized value-ranked recommendations."
+        else "Set your budget and filters to surface the most compelling deals in the dataset."
     )
 
     if is_seller:
@@ -290,13 +293,19 @@ def page_seller_dash():
 
     st.divider()
 
+    st.success(
+        f"Best current listing target: **{fmt(mid)}**. "
+        f"For a faster sale, price closer to **{fmt(low)}**. "
+        f"For a more ambitious listing, try **{fmt(high)}**."
+    )
+
     st.subheader("📊 Price Estimate")
-    st.write("Three-tier pricing from quantile regression models (CatBoost Q25 / Q50 / Q75).")
+    st.write("These three price points translate the model output into practical selling strategies.")
 
     m1, m2, m3 = st.columns(3)
-    m1.metric("⚡ Competitive", fmt(low), help="25th percentile — sells quickly")
-    m2.metric("⚖️ Fair Market", fmt(mid), help="50th percentile — balanced estimate")
-    m3.metric("💎 Premium", fmt(high), help="75th percentile — may sit longer")
+    m1.metric("⚡ Sell-Fast Price", fmt(low), help="A more competitive number if you want stronger short-term interest")
+    m2.metric("⚖️ Recommended Price", fmt(mid), help="The main fair-market estimate for a balanced listing")
+    m3.metric("💎 Premium Price", fmt(high), help="A more ambitious price that may take longer to sell")
 
     fig_g = go.Figure(go.Indicator(
         mode="gauge+number", value=mid,
@@ -318,6 +327,7 @@ def page_seller_dash():
     st.divider()
 
     st.subheader("📉 Depreciation Analysis")
+    st.write("See where your car sits on the value curve and what delaying the sale might cost.")
 
     try:
         dep_df = depreciation.load_data()
@@ -381,8 +391,8 @@ def page_seller_dash():
 
     st.divider()
 
-    st.subheader("🔮 What-If Simulator")
-    st.caption("Estimate how your car's value changes if you keep driving it and sell later.")
+    st.subheader("🔮 Hold-or-Sell Simulator")
+    st.caption("See how your estimate changes if you keep the car longer and add more miles before selling.")
 
     with st.form("whatif"):
         w1, w2 = st.columns(2)
@@ -488,6 +498,10 @@ def page_buyer_dash():
         + (f" · Make: **{p['make']}**" if p.get("make") else "")
     )
 
+    st.info(
+        "These recommendations are individual historical vehicle records ranked by how far their listed price sits below the model's fair-value estimate."
+    )
+
     st.subheader("🔧 Refine Your Search")
     df = load_reference_data()
     predict = load_predict_module()
@@ -561,6 +575,7 @@ def page_buyer_dash():
     st.divider()
 
     st.subheader("📋 Top 10 Recommendations")
+    st.write("These are the listings that currently look most attractive for your filters and budget.")
 
     for i in range(0, len(results), 2):
         cols = st.columns(2)
@@ -572,7 +587,7 @@ def page_buyer_dash():
                 conf_icon = "🟢" if conf == "High" else "🟡" if conf == "Medium" else "🔴"
                 vp = rec.get("avg_value_pct", 0)
                 deal_icon = "🟢" if vp >= 12 else "🔵" if vp >= 5 else "🟡" if vp >= 0 else "🔴"
-                deal = "Great Deal" if vp >= 12 else "Good Deal" if vp >= 5 else "Fair Deal" if vp >= 0 else "Above Market"
+                deal = "Excellent Value" if vp >= 12 else "Good Value" if vp >= 5 else "Fair Value" if vp >= 0 else "Above Market"
 
                 try:
                     typical_year = int(str(rec.get("year_range", "")).split("-")[0])
@@ -602,14 +617,14 @@ def page_buyer_dash():
                     pc1.metric("Listing Price", fmt(rec["listing_price"]))
                     pc2.metric("Fair Value", fmt(rec["predicted_fair"]))
                     if vp > 0:
-                        st.markdown(f"↓ **{vp:.1f}%** below fair value")
+                        st.markdown(f"↓ **Estimated savings: {vp:.1f}% below fair value**")
                     if rec.get("reason"):
                         st.caption(f"💬 _{rec['reason']}_")
 
     st.divider()
 
     st.subheader("🗺️ Regional Best Deals")
-    st.caption("Which regions tend to have the best deals across all vehicles?")
+    st.caption("Across the full dataset, these regions tend to offer stronger prices relative to model-estimated fair value.")
 
     try:
         region_deals = get_cached_region_deals(top_n=6)
@@ -641,7 +656,7 @@ def page_buyer_dash():
     st.divider()
 
     st.subheader("⚖️ Side-by-Side Comparison")
-    st.caption("Select 2–3 cars to compare.")
+    st.caption("Shortlist two or three cars to compare price, value gap, mileage, and data support.")
 
     titles = [r["title"] for r in results]
     selected = st.multiselect("Choose cars to compare", titles, max_selections=3)
