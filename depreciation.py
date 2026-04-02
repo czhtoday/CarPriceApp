@@ -36,10 +36,13 @@ def compute_depreciation(df):
 
 
 def estimate_future_drop(avg_price, age, years=2):
-    future = avg_price[
-        avg_price["Car_Age"].between(age, age + years)
-    ]
-    return future["depreciation"].sum()
+    current = avg_price.loc[avg_price["Car_Age"] == age, "pricesold"]
+    future = avg_price.loc[avg_price["Car_Age"] == age + years, "pricesold"]
+
+    if current.empty or future.empty:
+        return None
+
+    return float(current.iloc[0] - future.iloc[0])
 
 
 # ================================
