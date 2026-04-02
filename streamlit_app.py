@@ -293,12 +293,6 @@ def page_seller_dash():
 
     st.divider()
 
-    st.success(
-        f"Best current listing target: **{fmt(mid)}**. "
-        f"For a faster sale, price closer to **{fmt(low)}**. "
-        f"For a more ambitious listing, try **{fmt(high)}**."
-    )
-
     st.subheader("📊 Price Estimate")
     st.write("These three price points translate the model output into practical selling strategies.")
 
