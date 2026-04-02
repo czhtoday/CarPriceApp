@@ -547,14 +547,6 @@ def page_buyer_dash():
 
     st.divider()
 
-    top = results[0]
-    st.success(
-        f"⭐ **Top Pick: {top['title']}** ({top['year_range']}) — "
-        f"listing price **{fmt(top['listing_price'])}**, "
-        f"fair value **{fmt(top['predicted_fair'])}** — "
-        f"{top.get('data_support', top.get('confidence_help', top['confidence']))}"
-    )
-
     s1, s2, s3, s4 = st.columns(4)
     s1.metric("Results", len(results))
     avg_p = sum(r["listing_price"] for r in results) // len(results)
