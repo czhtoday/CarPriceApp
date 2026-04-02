@@ -1,0 +1,8 @@
+streamlit
+catboost
+pandas
+numpy
+plotly
+fastapi
+uvicorn
+pydantic

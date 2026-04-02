@@ -126,6 +126,36 @@ Then start the Streamlit app from the repository root:
 streamlit run streamlit_app.py
 ```
 
+You can still run the app locally this way without Docker if you already have the Python environment set up.
+
+## Run With Docker
+
+If you want a portable environment that runs the app the same way on different machines, you can use Docker instead.
+
+Build the image from the repository root:
+
+```bash
+docker build -t carprice .
+```
+
+Then start a container:
+
+```bash
+docker run -p 8501:8501 carprice
+```
+
+After that, open:
+
+```txt
+http://localhost:8501
+```
+
+Notes:
+
+- `docker build -t carprice .` builds a Docker image named `carprice` from the current folder and its `Dockerfile`
+- `docker run -p 8501:8501 carprice` starts a container from that image and maps your local port `8501` to the app inside the container
+- after code changes, rebuild the image before rerunning the container
+
 ## Optional API Mode
 
 If you want to run the FastAPI wrapper instead of the Streamlit app:

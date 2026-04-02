@@ -192,10 +192,10 @@ def _predict_price_ranges_batch(candidates_df):
         "Trim": candidates_df["Trim"].fillna("Missing").astype(str),
         "DriveType": candidates_df["DriveType"].fillna("Missing").astype(str),
         "BodyType": candidates_df["BodyType"].fillna("Missing").astype(str),
-        "brand_clean": candidates_df["brand_clean"].astype(str),
-        "brand_tier": candidates_df["brand_tier"].astype(str),
+        "brand_clean": candidates_df["brand_clean"].fillna("Missing").astype(str),
+        "brand_tier": candidates_df["brand_tier"].fillna("Missing").astype(str),
         "Model": candidates_df["Model"].fillna("Missing").astype(str),
-        "zip3": candidates_df["zip3"].astype(str),
+        "zip3": candidates_df["zip3"].fillna("Missing").astype(str),
     })
 
     lows = _model_q25.predict(batch) * CPI_ADJUSTMENT
